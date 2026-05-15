@@ -154,6 +154,10 @@ def _mock_leads(days_back: int) -> list[dict[str, Any]]:
         entry_age_days = rng.choices([0, 1, 3, 7, 14, 30, 60, 90], weights=[15, 15, 15, 15, 15, 10, 8, 7])[0]
         last_call_offset_hours = 0 if called_count == 0 else rng.randint(1, max(1, days_back) * 24)
 
+        last_agent_id = "" if called_count == 0 else rng.choice(_MOCK_AGENTS)[0]
+        last_agent_name = "" if called_count == 0 else next(
+            (n for u, n, _ in _MOCK_AGENTS if u == last_agent_id), ""
+        )
         leads.append({
             "lead_id": 100000 + i,
             "first_name": rng.choice(_MOCK_FIRST_NAMES),
@@ -172,6 +176,8 @@ def _mock_leads(days_back: int) -> list[dict[str, Any]]:
             "last_call_dispo": last_dispo,
             "total_call_seconds": last_call_duration * max(called_count, 1),
             "campaign_id": rng.choice(_MOCK_CAMPAIGNS)[0],
+            "last_agent": last_agent_id,
+            "last_agent_name": last_agent_name,
             "source": rng.choices(_MOCK_SOURCES, weights=[30, 40, 10, 15, 5])[0],
             "language": rng.choices(["es", "en"], weights=[75, 25])[0],
         })
