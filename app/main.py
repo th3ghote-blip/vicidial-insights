@@ -89,3 +89,8 @@ def weekly_insight(lang: str = Query("es", pattern="^(es|en)$")):
 @app.get("/campaigns", dependencies=[Depends(require_token)])
 def campaigns():
     return {"campaigns": vicidial.fetch_campaigns()}
+
+
+@app.get("/campaigns/performance", dependencies=[Depends(require_token)])
+def campaign_performance(days_back: int = Query(30, ge=1, le=180)):
+    return {"campaigns": vicidial.fetch_campaign_performance(days_back=days_back)}

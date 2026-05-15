@@ -42,6 +42,12 @@ def fetch_campaigns() -> list[dict[str, Any]]:
     return _real_campaigns()
 
 
+def fetch_campaign_performance(days_back: int = 30) -> list[dict[str, Any]]:
+    if settings.mock_mode:
+        return _mock_campaign_performance(days_back)
+    return _real_campaign_performance(days_back)
+
+
 def fetch_disposition_breakdown(days_back: int = 7) -> list[dict[str, Any]]:
     if settings.mock_mode:
         return _mock_dispo_breakdown(days_back)
@@ -67,6 +73,11 @@ def fetch_sales_trend(days_back: int = 7) -> list[dict[str, Any]]:
 # A fixed pool so repeated calls return stable results during dev.
 _MOCK_STATES = ["FL", "TX", "CA", "NY", "GA", "AZ", "NV", "IL", "NJ", "NC", "WA", "CO", "PA", "OH", "MI"]
 _MOCK_DISPOS = ["SALE", "CALLBK", "NI", "NA", "DNC", "B"]
+_MOCK_SOURCES = ["web_form", "purchased_list", "referral", "inbound", "social_media"]
+_MOCK_FIRST_NAMES = ["Carlos", "María", "Juan", "Ana", "Pedro", "Sofía", "Luis", "Rosa",
+                     "Miguel", "Carmen", "Jorge", "Elena", "Roberto", "Diana", "Fernando"]
+_MOCK_LAST_NAMES  = ["García", "Rodríguez", "Martínez", "López", "González", "Pérez",
+                     "Sánchez", "Torres", "Ramírez", "Flores", "Castro", "Moreno", "Herrera", "Vega", "Núñez"]
 _MOCK_AGENTS = [
     # (user_id, full_name, skill_factor)  — skill_factor drives close_rate variance
     ("agent_maria",   "María González",    0.13),
@@ -115,6 +126,8 @@ def _mock_leads(days_back: int) -> list[dict[str, Any]]:
 
         leads.append({
             "lead_id": 100000 + i,
+            "first_name": rng.choice(_MOCK_FIRST_NAMES),
+            "last_name": rng.choice(_MOCK_LAST_NAMES),
             "phone_number": f"1{rng.randint(2000000000, 9999999999)}",
             "state": rng.choice(_MOCK_STATES),
             "postal_code": f"{rng.randint(10000, 99999)}",
@@ -129,20 +142,43 @@ def _mock_leads(days_back: int) -> list[dict[str, Any]]:
             "last_call_dispo": last_dispo,
             "total_call_seconds": last_call_duration * max(called_count, 1),
             "campaign_id": rng.choice(_MOCK_CAMPAIGNS)[0],
+            "source": rng.choices(_MOCK_SOURCES, weights=[30, 40, 10, 15, 5])[0],
+            "language": rng.choices(["es", "en"], weights=[75, 25])[0],
         })
     return leads
 
 
 def _mock_agent_stats(days_back: int) -> list[dict[str, Any]]:
+    """
+    Real backend maps to:
+      calls_handled  → COUNT(*) FROM vicidial_agent_log
+      talk_seconds   → SUM(talk_sec)
+      pause_seconds  → SUM(pause_sec)
+      login_seconds  → SUM(talk_sec + wait_sec + dispo_sec + pause_sec + dead_sec)
+      callbacks_set  → COUNT(*) WHERE status = dispo_callback FROM vicidial_log
+      avg_wait_sec   → AVG(wait_sec) FROM vicidial_agent_log
+    """
     rng = random.Random(7)
     out: list[dict[str, Any]] = []
+    weekdays = max(1, int(days_back * 5 / 7))
     for user, full_name, skill in _MOCK_AGENTS:
         calls = rng.randint(120, 280) * max(1, days_back // 7)
-        # skill_factor drives close_rate; add noise so it's not perfectly sorted
         rate = max(0.01, min(0.20, skill + rng.uniform(-0.015, 0.015)))
         sales = max(1, int(calls * rate))
         avg_talk = rng.randint(75, 220)
         talk_sec = calls * avg_talk
+
+        # Efficiency fields
+        hours_per_day = rng.uniform(6.5, 8.5)
+        login_sec = int(hours_per_day * 3600 * weekdays)
+        pause_sec = int(login_sec * rng.uniform(0.05, 0.20))
+        utilization = round(min(0.95, talk_sec / login_sec), 3) if login_sec else 0.0
+        avg_wait = int((login_sec - talk_sec - pause_sec) / max(calls, 1))
+        dials_per_hr = round(calls / (login_sec / 3600), 1) if login_sec else 0.0
+
+        callbacks_set = int(calls * rng.uniform(0.06, 0.18))
+        callbacks_converted = int(callbacks_set * rng.uniform(0.20, 0.55))
+
         out.append({
             "user": user,
             "full_name": full_name,
@@ -151,6 +187,16 @@ def _mock_agent_stats(days_back: int) -> list[dict[str, Any]]:
             "close_rate": round(sales / calls, 4),
             "talk_seconds": talk_sec,
             "avg_talk_sec": float(avg_talk),
+            # Efficiency
+            "login_seconds": login_sec,
+            "pause_seconds": pause_sec,
+            "utilization_rate": utilization,       # talk / login (higher = busier)
+            "avg_wait_sec": max(0, avg_wait),       # dead time between calls
+            "dials_per_hour": dials_per_hr,
+            # Follow-up
+            "callbacks_set": callbacks_set,
+            "callbacks_converted": callbacks_converted,
+            "callback_conversion_rate": round(callbacks_converted / callbacks_set, 3) if callbacks_set else 0.0,
         })
     out.sort(key=lambda a: a["close_rate"], reverse=True)
     return out
@@ -190,6 +236,53 @@ def _mock_sales_trend(days_back: int) -> list[dict[str, Any]]:
         sales = base + trend_boost + rng.randint(-4, 6)
         calls = sales * rng.randint(8, 14)  # ~8-14 calls per sale
         out.append({"date": date.isoformat(), "sales": max(0, sales), "calls": max(0, calls)})
+    return out
+
+
+def _mock_campaign_performance(days_back: int) -> list[dict[str, Any]]:
+    """
+    Real backend maps to:
+      leads_total      → COUNT(*) FROM vicidial_list WHERE campaign_id = X
+      leads_contacted  → COUNT(DISTINCT lead_id) FROM vicidial_log WHERE campaign_id = X
+      total_dials      → COUNT(*) FROM vicidial_log WHERE campaign_id = X
+      total_sales      → COUNT(*) WHERE status = dispo_sale
+      avg_handle_sec   → AVG(length_in_sec)
+      best_hour        → HOUR(call_date) with MAX(conversion_rate)
+    """
+    rng = random.Random(99)
+    out: list[dict[str, Any]] = []
+    days_of_week = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+    for cid, name in _MOCK_CAMPAIGNS:
+        leads_total = rng.randint(800, 4000)
+        leads_contacted = int(leads_total * rng.uniform(0.30, 0.72))
+        contact_rate = round(leads_contacted / leads_total, 3)
+        total_dials = int(leads_contacted * rng.uniform(1.8, 4.5))
+        total_sales = max(1, int(total_dials * rng.uniform(0.03, 0.11)))
+        conversion_rate = round(total_sales / total_dials, 3)
+        dials_per_sale = round(total_dials / total_sales, 1)
+        avg_handle_sec = rng.randint(90, 260)
+        best_hour = rng.choice([10, 11, 14, 15, 16])
+        best_day = rng.choice(days_of_week)
+        active_agents = rng.randint(3, 12)
+        cost_per_lead = round(rng.uniform(1.5, 8.0), 2)   # USD, if tracked
+        out.append({
+            "campaign_id": cid,
+            "campaign_name": name,
+            "leads_total": leads_total,
+            "leads_contacted": leads_contacted,
+            "contact_rate": contact_rate,           # answered / total leads
+            "penetration_rate": contact_rate,       # alias — % of list worked
+            "total_dials": total_dials,
+            "total_sales": total_sales,
+            "conversion_rate": conversion_rate,     # sales / dials
+            "dials_per_sale": dials_per_sale,       # lower = more efficient
+            "avg_handle_time_sec": avg_handle_sec,
+            "best_hour": best_hour,                 # hour of day with peak conversion
+            "best_day": best_day,
+            "active_agents": active_agents,
+            "cost_per_lead_usd": cost_per_lead,     # from list purchase price if known
+        })
+    out.sort(key=lambda c: c["conversion_rate"], reverse=True)
     return out
 
 
@@ -336,6 +429,41 @@ def _real_sales_trend(days_back: int) -> list[dict[str, Any]]:
             for r in rows:
                 if hasattr(r["date"], "isoformat"):
                     r["date"] = r["date"].isoformat()
+            return rows
+
+
+def _real_campaign_performance(days_back: int) -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+            c.campaign_id,
+            c.campaign_name,
+            COUNT(DISTINCT l.lead_id)                             AS leads_total,
+            COUNT(DISTINCT g.lead_id)                             AS leads_contacted,
+            COUNT(g.uniqueid)                                     AS total_dials,
+            SUM(CASE WHEN g.status = %s THEN 1 ELSE 0 END)       AS total_sales,
+            ROUND(AVG(g.length_in_sec))                           AS avg_handle_time_sec,
+            HOUR(MAX(CASE WHEN g.status = %s THEN g.call_date END)) AS best_hour
+        FROM vicidial_campaigns c
+        LEFT JOIN vicidial_lists li ON li.campaign_id = c.campaign_id
+        LEFT JOIN vicidial_list  l  ON l.list_id = li.list_id
+        LEFT JOIN vicidial_log   g  ON g.lead_id = l.lead_id
+            AND g.call_date >= NOW() - INTERVAL %s DAY
+        GROUP BY c.campaign_id, c.campaign_name
+        ORDER BY total_sales DESC
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (settings.dispo_sale, settings.dispo_sale, days_back))
+            rows = cur.fetchall()
+            for r in rows:
+                lt = r.get("leads_total") or 1
+                td = r.get("total_dials") or 1
+                ts = r.get("total_sales") or 0
+                lc = r.get("leads_contacted") or 0
+                r["contact_rate"] = round(lc / lt, 3)
+                r["penetration_rate"] = r["contact_rate"]
+                r["conversion_rate"] = round(ts / td, 3)
+                r["dials_per_sale"] = round(td / max(ts, 1), 1)
             return rows
 
 
