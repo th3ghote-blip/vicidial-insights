@@ -28,12 +28,21 @@
 - [x] Rate limiting on `/insights/weekly` — 30 calls/hour in-process sliding window
 - [ ] Rotate `sb_secret_` key after pipeline is stable (was pasted in chat)
 
+## Deploy
+- [x] GitHub repo (public): https://github.com/th3ghote-blip/vicidial-insights
+- [x] Railway project + service deployed in mock mode
+- [x] Public URL live: https://vicidial-insights-production.up.railway.app
+- [x] All 5 protected endpoints verified 200 authed / 401 unauth from public URL
+- [ ] **Upgrade Railway from Trial to Hobby ($5/mo)** before $4.08 / 20 days runs out
+- [ ] Add `ANTHROPIC_API_KEY` on Railway when ready for real AI summaries
+
 ## Wire-up (when creds land)
-- [ ] Drop creds into Railway env vars
+- [ ] Drop creds into Railway env vars (VICIDIAL_HOST, USER, PASSWORD, DB)
+- [ ] Update `DISPO_SALE` and `DISPO_CALLBACK` to client's actual codes
 - [ ] Flip `MOCK_MODE=false`
 - [ ] Verify schema match against real Vicidial (column names, types)
 - [ ] First nightly cron run end-to-end
-- [ ] Base44 frontend points at Railway URL
+- [ ] Base44 frontend points at Railway URL with bearer token
 
 ## Pre-flight before declaring "done"
 - [ ] DISPO codes from admin actually match what scoring expects
