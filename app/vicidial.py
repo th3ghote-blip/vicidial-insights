@@ -48,6 +48,20 @@ def fetch_disposition_breakdown(days_back: int = 7) -> list[dict[str, Any]]:
     return _real_dispo_breakdown(days_back)
 
 
+def fetch_call_times_by_hour(days_back: int = 7) -> list[dict[str, Any]]:
+    """Hourly distribution of calls + sale conversions, for the 'best time' chart."""
+    if settings.mock_mode:
+        return _mock_call_times(days_back)
+    return _real_call_times(days_back)
+
+
+def fetch_sales_trend(days_back: int = 7) -> list[dict[str, Any]]:
+    """Daily sales count over the window, for the trend line chart."""
+    if settings.mock_mode:
+        return _mock_sales_trend(days_back)
+    return _real_sales_trend(days_back)
+
+
 # ---------- Mock backend -------------------------------------------------------
 
 # A fixed pool so repeated calls return stable results during dev.
@@ -129,6 +143,37 @@ def _mock_agent_stats(days_back: int) -> list[dict[str, Any]]:
 
 def _mock_campaigns() -> list[dict[str, Any]]:
     return [{"campaign_id": cid, "campaign_name": name, "active": "Y"} for cid, name in _MOCK_CAMPAIGNS]
+
+
+def _mock_call_times(days_back: int) -> list[dict[str, Any]]:
+    rng = random.Random(13)
+    out: list[dict[str, Any]] = []
+    # Peaks 10am-12pm and 2pm-4pm; quiet evenings.
+    weights = {
+        8: 30, 9: 60, 10: 110, 11: 130, 12: 100, 13: 75,
+        14: 120, 15: 140, 16: 95, 17: 70, 18: 45, 19: 25, 20: 15,
+    }
+    for hour in range(8, 21):
+        calls = int(weights.get(hour, 20) * max(1, days_back / 7) * rng.uniform(0.8, 1.2))
+        # Conversion rate is highest mid-morning (10-11) and mid-afternoon (14-15)
+        rate = 0.10 if hour in (10, 11, 14, 15) else 0.06 if hour in (9, 12, 13, 16) else 0.03
+        sales = int(calls * rate)
+        out.append({"hour": hour, "calls": calls, "sales": sales})
+    return out
+
+
+def _mock_sales_trend(days_back: int) -> list[dict[str, Any]]:
+    rng = random.Random(17)
+    now = datetime.now(timezone.utc)
+    out: list[dict[str, Any]] = []
+    for d in range(days_back - 1, -1, -1):
+        date = (now - timedelta(days=d)).date()
+        # Weekday boost: M-F higher than S-S
+        is_weekend = date.weekday() >= 5
+        base = 6 if is_weekend else 12
+        sales = base + rng.randint(-3, 5)
+        out.append({"date": date.isoformat(), "sales": max(0, sales)})
+    return out
 
 
 def _mock_dispo_breakdown(days_back: int) -> list[dict[str, Any]]:
@@ -237,6 +282,44 @@ def _real_campaigns() -> list[dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(sql)
             return cur.fetchall()
+
+
+def _real_call_times(days_back: int) -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+            HOUR(call_date) AS hour,
+            COUNT(*) AS calls,
+            SUM(CASE WHEN status = %s THEN 1 ELSE 0 END) AS sales
+        FROM vicidial_log
+        WHERE call_date >= NOW() - INTERVAL %s DAY
+        GROUP BY HOUR(call_date)
+        ORDER BY hour
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (settings.dispo_sale, days_back))
+            return cur.fetchall()
+
+
+def _real_sales_trend(days_back: int) -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+            DATE(call_date) AS date,
+            COUNT(*) AS sales
+        FROM vicidial_log
+        WHERE call_date >= NOW() - INTERVAL %s DAY
+          AND status = %s
+        GROUP BY DATE(call_date)
+        ORDER BY date
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (days_back, settings.dispo_sale))
+            rows = cur.fetchall()
+            for r in rows:
+                if hasattr(r["date"], "isoformat"):
+                    r["date"] = r["date"].isoformat()
+            return rows
 
 
 def _real_dispo_breakdown(days_back: int) -> list[dict[str, Any]]:

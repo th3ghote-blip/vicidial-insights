@@ -63,6 +63,16 @@ def dispositions(days_back: int = Query(7, ge=1, le=90)):
     return {"dispositions": vicidial.fetch_disposition_breakdown(days_back=days_back)}
 
 
+@app.get("/insights/call-times", dependencies=[Depends(require_token)])
+def call_times(days_back: int = Query(7, ge=1, le=90)):
+    return {"hours": vicidial.fetch_call_times_by_hour(days_back=days_back)}
+
+
+@app.get("/insights/sales-trend", dependencies=[Depends(require_token)])
+def sales_trend(days_back: int = Query(7, ge=1, le=90)):
+    return {"days": vicidial.fetch_sales_trend(days_back=days_back)}
+
+
 @app.get(
     "/insights/weekly",
     dependencies=[Depends(require_token), Depends(rate_limit_weekly)],
