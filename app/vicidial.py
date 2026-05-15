@@ -65,19 +65,32 @@ def fetch_sales_trend(days_back: int = 7) -> list[dict[str, Any]]:
 # ---------- Mock backend -------------------------------------------------------
 
 # A fixed pool so repeated calls return stable results during dev.
-_MOCK_STATES = ["FL", "TX", "CA", "NY", "GA", "AZ", "NV", "IL"]
-_MOCK_DISPOS = ["SALE", "CALLBK", "NI", "NA", "DNC", "B"]  # SALE/CALLBK/NotInt/NoAnswer/DNC/Busy
+_MOCK_STATES = ["FL", "TX", "CA", "NY", "GA", "AZ", "NV", "IL", "NJ", "NC", "WA", "CO", "PA", "OH", "MI"]
+_MOCK_DISPOS = ["SALE", "CALLBK", "NI", "NA", "DNC", "B"]
 _MOCK_AGENTS = [
-    ("agent_maria", "María González"),
-    ("agent_juan", "Juan Pérez"),
-    ("agent_ana", "Ana Rodríguez"),
-    ("agent_carlos", "Carlos Sánchez"),
-    ("agent_lucia", "Lucía Fernández"),
+    # (user_id, full_name, skill_factor)  — skill_factor drives close_rate variance
+    ("agent_maria",   "María González",    0.13),
+    ("agent_juan",    "Juan Pérez",         0.11),
+    ("agent_ana",     "Ana Rodríguez",      0.10),
+    ("agent_carlos",  "Carlos Sánchez",     0.09),
+    ("agent_lucia",   "Lucía Fernández",    0.09),
+    ("agent_pedro",   "Pedro Martínez",     0.08),
+    ("agent_sofia",   "Sofía López",        0.07),
+    ("agent_diego",   "Diego Ramírez",      0.07),
+    ("agent_valeria", "Valeria Torres",     0.06),
+    ("agent_miguel",  "Miguel Herrera",     0.06),
+    ("agent_camila",  "Camila Vargas",      0.05),
+    ("agent_andres",  "Andrés Castro",      0.05),
+    ("agent_isabela", "Isabela Moreno",     0.04),
+    ("agent_rodrigo", "Rodrigo Núñez",      0.04),
+    ("agent_elena",   "Elena Vega",         0.03),
 ]
 _MOCK_CAMPAIGNS = [
-    ("CC_FL", "Tarjetas de Crédito - Florida"),
-    ("LOAN_TX", "Préstamos Personales - Texas"),
-    ("REFI_CA", "Refinanciamiento - California"),
+    ("CC_FL",    "Tarjetas de Crédito - Florida"),
+    ("LOAN_TX",  "Préstamos Personales - Texas"),
+    ("REFI_CA",  "Refinanciamiento - California"),
+    ("CC_NY",    "Tarjetas de Crédito - Nueva York"),
+    ("LOAN_GA",  "Préstamos Personales - Georgia"),
 ]
 
 
@@ -85,18 +98,17 @@ def _mock_leads(days_back: int) -> list[dict[str, Any]]:
     rng = random.Random(42)
     now = datetime.now(timezone.utc)
     leads: list[dict[str, Any]] = []
-    for i in range(120):
+    for i in range(300):
         called_count = rng.choices([0, 1, 2, 3, 4, 5, 6, 7, 8], weights=[10, 20, 25, 15, 10, 8, 5, 4, 3])[0]
         last_dispo = "" if called_count == 0 else rng.choices(_MOCK_DISPOS, weights=[3, 12, 25, 35, 5, 20])[0]
-        # Convert mock dispo into the *configured* sale/callback codes so tests stay aligned with prod.
         if last_dispo == "SALE":
             last_dispo = settings.dispo_sale
         elif last_dispo == "CALLBK":
             last_dispo = settings.dispo_callback
 
         last_call_duration = 0 if called_count == 0 else rng.choices(
-            [10, 30, 45, 75, 120, 180, 300],
-            weights=[20, 25, 20, 15, 10, 7, 3],
+            [10, 30, 45, 75, 120, 180, 300, 480],
+            weights=[15, 20, 20, 15, 12, 10, 5, 3],
         )[0]
         entry_age_days = rng.choices([0, 1, 3, 7, 14, 30, 60, 90], weights=[15, 15, 15, 15, 15, 10, 8, 7])[0]
         last_call_offset_hours = 0 if called_count == 0 else rng.randint(1, max(1, days_back) * 24)
@@ -124,10 +136,13 @@ def _mock_leads(days_back: int) -> list[dict[str, Any]]:
 def _mock_agent_stats(days_back: int) -> list[dict[str, Any]]:
     rng = random.Random(7)
     out: list[dict[str, Any]] = []
-    for user, full_name in _MOCK_AGENTS:
-        calls = rng.randint(80, 220) * max(1, days_back // 7)
-        sales = max(1, int(calls * rng.uniform(0.02, 0.12)))
-        talk_sec = calls * rng.randint(60, 180)
+    for user, full_name, skill in _MOCK_AGENTS:
+        calls = rng.randint(120, 280) * max(1, days_back // 7)
+        # skill_factor drives close_rate; add noise so it's not perfectly sorted
+        rate = max(0.01, min(0.20, skill + rng.uniform(-0.015, 0.015)))
+        sales = max(1, int(calls * rate))
+        avg_talk = rng.randint(75, 220)
+        talk_sec = calls * avg_talk
         out.append({
             "user": user,
             "full_name": full_name,
@@ -135,7 +150,7 @@ def _mock_agent_stats(days_back: int) -> list[dict[str, Any]]:
             "sales": sales,
             "close_rate": round(sales / calls, 4),
             "talk_seconds": talk_sec,
-            "avg_talk_sec": round(talk_sec / calls, 1),
+            "avg_talk_sec": float(avg_talk),
         })
     out.sort(key=lambda a: a["close_rate"], reverse=True)
     return out
@@ -168,11 +183,13 @@ def _mock_sales_trend(days_back: int) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for d in range(days_back - 1, -1, -1):
         date = (now - timedelta(days=d)).date()
-        # Weekday boost: M-F higher than S-S
         is_weekend = date.weekday() >= 5
-        base = 6 if is_weekend else 12
-        sales = base + rng.randint(-3, 5)
-        out.append({"date": date.isoformat(), "sales": max(0, sales)})
+        # Slight upward trend over time + weekend dip + noise
+        trend_boost = int((days_back - d) / days_back * 8)
+        base = 4 if is_weekend else 18
+        sales = base + trend_boost + rng.randint(-4, 6)
+        calls = sales * rng.randint(8, 14)  # ~8-14 calls per sale
+        out.append({"date": date.isoformat(), "sales": max(0, sales), "calls": max(0, calls)})
     return out
 
 
