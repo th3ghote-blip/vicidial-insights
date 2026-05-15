@@ -94,3 +94,39 @@ def campaigns():
 @app.get("/campaigns/performance", dependencies=[Depends(require_token)])
 def campaign_performance(days_back: int = Query(30, ge=1, le=180)):
     return {"campaigns": vicidial.fetch_campaign_performance(days_back=days_back)}
+
+
+@app.get("/agents/momentum", dependencies=[Depends(require_token)])
+def agents_momentum(weeks_back: int = Query(4, ge=2, le=12)):
+    return {"agents": vicidial.fetch_agent_momentum(weeks_back=weeks_back)}
+
+
+@app.get("/insights/sources", dependencies=[Depends(require_token)])
+def insights_sources(days_back: int = Query(30, ge=1, le=180)):
+    return {"sources": vicidial.fetch_lead_sources(days_back=days_back)}
+
+
+@app.get("/insights/forecast", dependencies=[Depends(require_token)])
+def insights_forecast():
+    return vicidial.fetch_pipeline_forecast()
+
+
+@app.get("/insights/contact-velocity", dependencies=[Depends(require_token)])
+def insights_contact_velocity(days_back: int = Query(7, ge=1, le=30)):
+    return vicidial.fetch_contact_velocity(days_back=days_back)
+
+
+@app.get("/agents/by-campaign", dependencies=[Depends(require_token)])
+def agents_by_campaign(days_back: int = Query(30, ge=1, le=180)):
+    return {"matrix": vicidial.fetch_agent_campaign_matrix(days_back=days_back)}
+
+
+@app.get("/insights/alerts", dependencies=[Depends(require_token)])
+def insights_alerts(lang: str = Query("es", pattern="^(es|en)$")):
+    momentum  = vicidial.fetch_agent_momentum(weeks_back=4)
+    sources   = vicidial.fetch_lead_sources(days_back=30)
+    forecast  = vicidial.fetch_pipeline_forecast()
+    velocity  = vicidial.fetch_contact_velocity(days_back=7)
+    campaigns = vicidial.fetch_campaign_performance(days_back=30)
+    alerts = summary.generate_alerts(momentum, sources, forecast, velocity, campaigns, lang=lang)
+    return {"lang": lang, "count": len(alerts), "alerts": alerts}

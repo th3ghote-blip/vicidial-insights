@@ -48,6 +48,36 @@ def fetch_campaign_performance(days_back: int = 30) -> list[dict[str, Any]]:
     return _real_campaign_performance(days_back)
 
 
+def fetch_agent_momentum(weeks_back: int = 4) -> list[dict[str, Any]]:
+    if settings.mock_mode:
+        return _mock_agent_momentum(weeks_back)
+    return _real_agent_momentum(weeks_back)
+
+
+def fetch_lead_sources(days_back: int = 30) -> list[dict[str, Any]]:
+    if settings.mock_mode:
+        return _mock_lead_sources(days_back)
+    return _real_lead_sources(days_back)
+
+
+def fetch_pipeline_forecast() -> dict[str, Any]:
+    if settings.mock_mode:
+        return _mock_pipeline_forecast()
+    return _real_pipeline_forecast()
+
+
+def fetch_contact_velocity(days_back: int = 7) -> dict[str, Any]:
+    if settings.mock_mode:
+        return _mock_contact_velocity(days_back)
+    return _real_contact_velocity(days_back)
+
+
+def fetch_agent_campaign_matrix(days_back: int = 30) -> list[dict[str, Any]]:
+    if settings.mock_mode:
+        return _mock_agent_campaign_matrix(days_back)
+    return _real_agent_campaign_matrix(days_back)
+
+
 def fetch_disposition_breakdown(days_back: int = 7) -> list[dict[str, Any]]:
     if settings.mock_mode:
         return _mock_dispo_breakdown(days_back)
@@ -286,6 +316,175 @@ def _mock_campaign_performance(days_back: int) -> list[dict[str, Any]]:
     return out
 
 
+def _mock_agent_momentum(weeks_back: int) -> list[dict[str, Any]]:
+    """Per-agent week-over-week trend. Real backend: same SQL as agent_stats but bucketed by ISO week."""
+    rng = random.Random(31)
+    out: list[dict[str, Any]] = []
+    for i, (user, full_name, skill) in enumerate(_MOCK_AGENTS):
+        # Generate weekly close-rate series (oldest → newest)
+        series = []
+        # Some agents are improving, some declining, some stable
+        if i % 5 == 0:        # rising star
+            base = max(0.02, skill - 0.05)
+            trajectory = [base + (skill - base) * (w + 1) / weeks_back + rng.uniform(-0.005, 0.005)
+                          for w in range(weeks_back)]
+            status = "rising_star"
+        elif i % 5 == 1:      # falling
+            trajectory = [skill + (0.04 * (weeks_back - w - 1) / weeks_back) + rng.uniform(-0.005, 0.005)
+                          for w in range(weeks_back)]
+            trajectory = [trajectory[0]] + [t * (1 - 0.15 * (j + 1) / weeks_back) for j, t in enumerate(trajectory[1:])]
+            status = "needs_attention"
+        elif i % 5 == 2:      # cooling slightly
+            trajectory = [skill + rng.uniform(-0.005, 0.005) for _ in range(weeks_back - 1)]
+            trajectory.append(skill * 0.85 + rng.uniform(-0.005, 0.005))
+            status = "cooling"
+        elif i % 5 == 3:      # on streak this week
+            trajectory = [skill + rng.uniform(-0.01, 0.01) for _ in range(weeks_back - 1)]
+            trajectory.append(skill * 1.4 + rng.uniform(0, 0.01))
+            status = "on_streak"
+        else:                  # stable
+            trajectory = [skill + rng.uniform(-0.01, 0.01) for _ in range(weeks_back)]
+            status = "stable"
+
+        current = round(max(0.01, trajectory[-1]), 4)
+        prior_avg = round(sum(trajectory[:-1]) / max(1, len(trajectory) - 1), 4)
+        change_pct = round(((current - prior_avg) / prior_avg) * 100, 1) if prior_avg else 0.0
+
+        out.append({
+            "user": user,
+            "full_name": full_name,
+            "current_close_rate": current,
+            "prior_avg_close_rate": prior_avg,
+            "change_pct": change_pct,
+            "status": status,             # rising_star | needs_attention | cooling | on_streak | stable
+            "weekly_series": [round(max(0.0, t), 4) for t in trajectory],
+        })
+    return out
+
+
+def _mock_lead_sources(days_back: int) -> list[dict[str, Any]]:
+    """Per-source ROI analysis. Real backend: GROUP BY l.source_id FROM vicidial_list JOIN vicidial_log."""
+    rng = random.Random(53)
+    out = []
+    # Each source has different cost + quality characteristics
+    profiles = {
+        "web_form":        {"cost": 4.5,  "contact": 0.65, "conv": 0.10, "vol": (800, 1500)},
+        "purchased_list":  {"cost": 1.2,  "contact": 0.32, "conv": 0.04, "vol": (2000, 4000)},
+        "referral":        {"cost": 0.0,  "contact": 0.78, "conv": 0.18, "vol": (80, 200)},
+        "inbound":         {"cost": 0.0,  "contact": 0.95, "conv": 0.22, "vol": (200, 500)},
+        "social_media":    {"cost": 6.0,  "contact": 0.55, "conv": 0.08, "vol": (300, 700)},
+    }
+    for source, p in profiles.items():
+        leads_total = rng.randint(*p["vol"])
+        contacted = int(leads_total * p["contact"] * rng.uniform(0.9, 1.1))
+        sales = max(1, int(contacted * p["conv"] * rng.uniform(0.85, 1.15)))
+        cost_per_lead = p["cost"]
+        cost_total = round(leads_total * cost_per_lead, 2)
+        cost_per_sale = round(cost_total / sales, 2) if sales else 0
+        out.append({
+            "source": source,
+            "leads_total": leads_total,
+            "leads_contacted": contacted,
+            "contact_rate": round(contacted / leads_total, 3),
+            "sales": sales,
+            "conversion_rate": round(sales / contacted, 3) if contacted else 0.0,
+            "cost_per_lead_usd": cost_per_lead,
+            "cost_total_usd": cost_total,
+            "cost_per_sale_usd": cost_per_sale,
+        })
+    out.sort(key=lambda s: s["cost_per_sale_usd"])
+    return out
+
+
+def _mock_pipeline_forecast() -> dict[str, Any]:
+    """
+    Forecast next 7 days using:
+      callbacks_scheduled_next_7d × historical_callback_conversion_rate
+    Real backend: SELECT FROM vicidial_callbacks WHERE callback_time BETWEEN NOW AND NOW+7d.
+    """
+    rng = random.Random(71)
+    callbacks_next_7d = rng.randint(80, 160)
+    historical_cb_conv = round(rng.uniform(0.18, 0.32), 3)
+    expected_cb_sales = int(callbacks_next_7d * historical_cb_conv)
+
+    fresh_leads_next_7d = rng.randint(400, 700)
+    fresh_conv = round(rng.uniform(0.06, 0.10), 3)
+    expected_fresh_sales = int(fresh_leads_next_7d * fresh_conv)
+
+    expected_total = expected_cb_sales + expected_fresh_sales
+    last_week_sales = rng.randint(60, 110)
+    delta_pct = round(((expected_total - last_week_sales) / last_week_sales) * 100, 1)
+
+    return {
+        "callbacks_scheduled_next_7d": callbacks_next_7d,
+        "historical_callback_conversion": historical_cb_conv,
+        "expected_callback_sales": expected_cb_sales,
+        "fresh_leads_next_7d": fresh_leads_next_7d,
+        "expected_fresh_sales": expected_fresh_sales,
+        "expected_total_sales": expected_total,
+        "last_week_sales": last_week_sales,
+        "delta_vs_last_week_pct": delta_pct,
+        "funnel": {
+            "new":        rng.randint(800, 1200),
+            "contacted":  rng.randint(500, 800),
+            "engaged":    rng.randint(150, 300),
+            "callback":   callbacks_next_7d,
+            "sold_7d":    last_week_sales,
+        },
+    }
+
+
+def _mock_contact_velocity(days_back: int) -> dict[str, Any]:
+    """
+    Time-to-first-contact: hours from lead entry to first dial.
+    Real backend: SELECT entry_date, MIN(call_date) FROM vicidial_list LEFT JOIN vicidial_log GROUP BY lead_id.
+    """
+    rng = random.Random(89)
+    avg_hours = round(rng.uniform(3.5, 7.5), 1)
+    median_hours = round(avg_hours * 0.7, 1)
+
+    by_age = [
+        {"age_bucket": "<24h",   "count": rng.randint(120, 200), "conversion_rate": round(rng.uniform(0.12, 0.18), 3)},
+        {"age_bucket": "1-3d",   "count": rng.randint(150, 250), "conversion_rate": round(rng.uniform(0.07, 0.11), 3)},
+        {"age_bucket": "3-7d",   "count": rng.randint(180, 300), "conversion_rate": round(rng.uniform(0.04, 0.07), 3)},
+        {"age_bucket": "7-30d",  "count": rng.randint(200, 400), "conversion_rate": round(rng.uniform(0.02, 0.05), 3)},
+        {"age_bucket": ">30d",   "count": rng.randint(100, 250), "conversion_rate": round(rng.uniform(0.01, 0.03), 3)},
+    ]
+    leads_stuck = rng.randint(15, 35)  # >48h since entry, no contact yet
+
+    return {
+        "avg_hours_to_first_contact": avg_hours,
+        "median_hours_to_first_contact": median_hours,
+        "leads_stuck_no_contact": leads_stuck,    # >48h since entry, no dial yet
+        "stuck_threshold_hours": 48,
+        "conversion_by_age": by_age,
+        "alert": leads_stuck > 20,
+    }
+
+
+def _mock_agent_campaign_matrix(days_back: int) -> list[dict[str, Any]]:
+    """Per (agent, campaign) breakdown. Real backend: GROUP BY user, campaign_id."""
+    rng = random.Random(103)
+    out = []
+    for user, full_name, skill in _MOCK_AGENTS:
+        for cid, cname in _MOCK_CAMPAIGNS:
+            # Each agent has affinity for some campaigns
+            affinity = rng.uniform(0.6, 1.4)
+            calls = rng.randint(20, 100)
+            rate = max(0.01, min(0.20, skill * affinity + rng.uniform(-0.01, 0.01)))
+            sales = max(0, int(calls * rate))
+            out.append({
+                "user": user,
+                "full_name": full_name,
+                "campaign_id": cid,
+                "campaign_name": cname,
+                "calls": calls,
+                "sales": sales,
+                "close_rate": round(sales / calls, 4) if calls else 0.0,
+            })
+    return out
+
+
 def _mock_dispo_breakdown(days_back: int) -> list[dict[str, Any]]:
     rng = random.Random(11)
     base = {
@@ -465,6 +664,37 @@ def _real_campaign_performance(days_back: int) -> list[dict[str, Any]]:
                 r["conversion_rate"] = round(ts / td, 3)
                 r["dials_per_sale"] = round(td / max(ts, 1), 1)
             return rows
+
+
+def _real_agent_momentum(weeks_back: int) -> list[dict[str, Any]]:
+    """
+    SELECT a.user, COALESCE(u.full_name, a.user) AS full_name,
+           YEARWEEK(a.event_time, 3) AS iso_week,
+           COUNT(*) AS calls,
+           SUM(CASE WHEN a.status = %s THEN 1 ELSE 0 END) AS sales
+    FROM vicidial_agent_log a LEFT JOIN vicidial_users u ON u.user = a.user
+    WHERE a.event_time >= NOW() - INTERVAL %s WEEK
+    GROUP BY a.user, iso_week
+    Then post-process in Python: compute weekly close_rate series, classify status.
+    """
+    raise NotImplementedError("Real Vicidial momentum requires creds — currently mock-only.")
+
+
+def _real_lead_sources(days_back: int) -> list[dict[str, Any]]:
+    raise NotImplementedError("Needs vicidial_list.source_id + cost mapping table from client.")
+
+
+def _real_pipeline_forecast() -> dict[str, Any]:
+    """SELECT COUNT(*) FROM vicidial_callbacks WHERE callback_time BETWEEN NOW() AND NOW() + INTERVAL 7 DAY"""
+    raise NotImplementedError("Needs vicidial_callbacks access.")
+
+
+def _real_contact_velocity(days_back: int) -> dict[str, Any]:
+    raise NotImplementedError("Needs vicidial_list + vicidial_log join with MIN(call_date).")
+
+
+def _real_agent_campaign_matrix(days_back: int) -> list[dict[str, Any]]:
+    raise NotImplementedError("Needs GROUP BY (user, campaign_id) on vicidial_log.")
 
 
 def _real_dispo_breakdown(days_back: int) -> list[dict[str, Any]]:
