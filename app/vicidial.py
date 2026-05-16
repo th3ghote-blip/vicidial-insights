@@ -259,19 +259,23 @@ def _mock_call_times(days_back: int) -> list[dict[str, Any]]:
     return out
 
 
+_EPOCH = date(2024, 1, 1)  # fixed reference point for trend calculation
+
 def _mock_sales_trend(days_back: int) -> list[dict[str, Any]]:
-    rng = random.Random(17)
     now = datetime.now(timezone.utc)
     out: list[dict[str, Any]] = []
     for d in range(days_back - 1, -1, -1):
-        date = (now - timedelta(days=d)).date()
-        is_weekend = date.weekday() >= 5
-        # Slight upward trend over time + weekend dip + noise
-        trend_boost = int((days_back - d) / days_back * 8)
+        dt = (now - timedelta(days=d)).date()
+        # Seed per absolute date — same date always returns same values regardless of window
+        rng = random.Random(dt.toordinal())
+        is_weekend = dt.weekday() >= 5
+        # Trend based on absolute days since epoch, not relative to window
+        days_since_epoch = (dt - _EPOCH).days
+        trend_boost = min(days_since_epoch // 15, 8)
         base = 4 if is_weekend else 18
         sales = base + trend_boost + rng.randint(-4, 6)
-        calls = sales * rng.randint(8, 14)  # ~8-14 calls per sale
-        out.append({"date": date.isoformat(), "sales": max(0, sales), "calls": max(0, calls)})
+        calls = sales * rng.randint(8, 14)
+        out.append({"date": dt.isoformat(), "sales": max(0, sales), "calls": max(0, calls)})
     return out
 
 
