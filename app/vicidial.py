@@ -13,7 +13,7 @@ strings should change.
 from __future__ import annotations
 
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pymysql
