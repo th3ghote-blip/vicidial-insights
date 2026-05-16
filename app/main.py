@@ -97,8 +97,8 @@ def campaign_performance(days_back: int = Query(30, ge=1, le=180)):
 
 
 @app.get("/agents/momentum", dependencies=[Depends(require_token)])
-def agents_momentum(weeks_back: int = Query(4, ge=2, le=12)):
-    return {"agents": vicidial.fetch_agent_momentum(weeks_back=weeks_back)}
+def agents_momentum(days_back: int = Query(28, ge=1, le=90)):
+    return {"agents": vicidial.fetch_agent_momentum(days_back=days_back)}
 
 
 @app.get("/insights/sources", dependencies=[Depends(require_token)])

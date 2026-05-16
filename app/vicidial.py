@@ -48,10 +48,10 @@ def fetch_campaign_performance(days_back: int = 30) -> list[dict[str, Any]]:
     return _real_campaign_performance(days_back)
 
 
-def fetch_agent_momentum(weeks_back: int = 4) -> list[dict[str, Any]]:
+def fetch_agent_momentum(days_back: int = 28) -> list[dict[str, Any]]:
     if settings.mock_mode:
-        return _mock_agent_momentum(weeks_back)
-    return _real_agent_momentum(weeks_back)
+        return _mock_agent_momentum(days_back)
+    return _real_agent_momentum(days_back)
 
 
 def fetch_lead_sources(days_back: int = 30) -> list[dict[str, Any]]:
@@ -326,34 +326,48 @@ def _mock_campaign_performance(days_back: int) -> list[dict[str, Any]]:
     return out
 
 
-def _mock_agent_momentum(weeks_back: int) -> list[dict[str, Any]]:
-    """Per-agent week-over-week trend. Real backend: same SQL as agent_stats but bucketed by ISO week."""
+def _mock_agent_momentum(days_back: int) -> list[dict[str, Any]]:
+    """Per-agent close-rate trend series.
+
+    Granularity auto-selected: daily (days_back<=14) or weekly (>14).
+    Real backend: same SQL as agent_stats bucketed by day / ISO-week.
+    """
+    if days_back <= 14:
+        n_points = max(2, days_back)
+        granularity = "daily"
+    else:
+        n_points = min(13, max(2, (days_back + 6) // 7))
+        granularity = "weekly"
+
     rng = random.Random(31)
     out: list[dict[str, Any]] = []
     for i, (user, full_name, skill) in enumerate(_MOCK_AGENTS):
-        # Generate weekly close-rate series (oldest → newest)
-        series = []
-        # Some agents are improving, some declining, some stable
         if i % 5 == 0:        # rising star
             base = max(0.02, skill - 0.05)
-            trajectory = [base + (skill - base) * (w + 1) / weeks_back + rng.uniform(-0.005, 0.005)
-                          for w in range(weeks_back)]
+            trajectory = [
+                base + (skill - base) * (w + 1) / n_points + rng.uniform(-0.005, 0.005)
+                for w in range(n_points)
+            ]
             status = "rising_star"
         elif i % 5 == 1:      # falling
-            trajectory = [skill + (0.04 * (weeks_back - w - 1) / weeks_back) + rng.uniform(-0.005, 0.005)
-                          for w in range(weeks_back)]
-            trajectory = [trajectory[0]] + [t * (1 - 0.15 * (j + 1) / weeks_back) for j, t in enumerate(trajectory[1:])]
+            trajectory = [
+                skill + (0.04 * (n_points - w - 1) / n_points) + rng.uniform(-0.005, 0.005)
+                for w in range(n_points)
+            ]
+            trajectory = [trajectory[0]] + [
+                t * (1 - 0.15 * (j + 1) / n_points) for j, t in enumerate(trajectory[1:])
+            ]
             status = "needs_attention"
         elif i % 5 == 2:      # cooling slightly
-            trajectory = [skill + rng.uniform(-0.005, 0.005) for _ in range(weeks_back - 1)]
+            trajectory = [skill + rng.uniform(-0.005, 0.005) for _ in range(n_points - 1)]
             trajectory.append(skill * 0.85 + rng.uniform(-0.005, 0.005))
             status = "cooling"
         elif i % 5 == 3:      # on streak this week
-            trajectory = [skill + rng.uniform(-0.01, 0.01) for _ in range(weeks_back - 1)]
+            trajectory = [skill + rng.uniform(-0.01, 0.01) for _ in range(n_points - 1)]
             trajectory.append(skill * 1.4 + rng.uniform(0, 0.01))
             status = "on_streak"
         else:                  # stable
-            trajectory = [skill + rng.uniform(-0.01, 0.01) for _ in range(weeks_back)]
+            trajectory = [skill + rng.uniform(-0.01, 0.01) for _ in range(n_points)]
             status = "stable"
 
         current = round(max(0.01, trajectory[-1]), 4)
@@ -366,8 +380,9 @@ def _mock_agent_momentum(weeks_back: int) -> list[dict[str, Any]]:
             "current_close_rate": current,
             "prior_avg_close_rate": prior_avg,
             "change_pct": change_pct,
-            "status": status,             # rising_star | needs_attention | cooling | on_streak | stable
+            "status": status,
             "weekly_series": [round(max(0.0, t), 4) for t in trajectory],
+            "series_granularity": granularity,   # "daily" | "weekly"
         })
     return out
 
@@ -676,16 +691,16 @@ def _real_campaign_performance(days_back: int) -> list[dict[str, Any]]:
             return rows
 
 
-def _real_agent_momentum(weeks_back: int) -> list[dict[str, Any]]:
+def _real_agent_momentum(days_back: int) -> list[dict[str, Any]]:
     """
     SELECT a.user, COALESCE(u.full_name, a.user) AS full_name,
            YEARWEEK(a.event_time, 3) AS iso_week,
            COUNT(*) AS calls,
            SUM(CASE WHEN a.status = %s THEN 1 ELSE 0 END) AS sales
     FROM vicidial_agent_log a LEFT JOIN vicidial_users u ON u.user = a.user
-    WHERE a.event_time >= NOW() - INTERVAL %s WEEK
+    WHERE a.event_time >= NOW() - INTERVAL %s DAY
     GROUP BY a.user, iso_week
-    Then post-process in Python: compute weekly close_rate series, classify status.
+    Then post-process in Python: compute daily/weekly close_rate series, classify status.
     """
     raise NotImplementedError("Real Vicidial momentum requires creds — currently mock-only.")
 
