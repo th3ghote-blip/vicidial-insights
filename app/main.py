@@ -123,7 +123,7 @@ def agents_by_campaign(days_back: int = Query(30, ge=1, le=180)):
 
 @app.get("/insights/alerts", dependencies=[Depends(require_token)])
 def insights_alerts(lang: str = Query("es", pattern="^(es|en)$")):
-    momentum  = vicidial.fetch_agent_momentum(weeks_back=4)
+    momentum  = vicidial.fetch_agent_momentum(days_back=28)
     sources   = vicidial.fetch_lead_sources(days_back=30)
     forecast  = vicidial.fetch_pipeline_forecast()
     velocity  = vicidial.fetch_contact_velocity(days_back=7)
