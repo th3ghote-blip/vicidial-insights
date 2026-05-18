@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from .config import settings
 from . import vicidial, scoring, summary
@@ -21,7 +22,7 @@ app = FastAPI(title="vicidial-insights", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.allowed_origin] if settings.allowed_origin != "*" else ["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -119,6 +120,29 @@ def insights_contact_velocity(days_back: int = Query(7, ge=1, le=30)):
 @app.get("/agents/by-campaign", dependencies=[Depends(require_token)])
 def agents_by_campaign(days_back: int = Query(30, ge=1, le=180)):
     return {"matrix": vicidial.fetch_agent_campaign_matrix(days_back=days_back)}
+
+
+class ChatRequest(BaseModel):
+    question: str
+    lang: str = "es"
+    history: list[dict] = []
+
+
+@app.post("/chat", dependencies=[Depends(require_token)])
+def chat(req: ChatRequest):
+    """Interactive AI chat against live Vicidial data. ~$0.001/call (Haiku)."""
+    agents   = vicidial.fetch_agent_stats(days_back=7)
+    campaigns = vicidial.fetch_campaign_performance(days_back=30)
+    momentum  = vicidial.fetch_agent_momentum(days_back=28)
+    answer = summary.chat_with_data(
+        question=req.question,
+        history=req.history,
+        agents=agents,
+        campaigns=[c for c in campaigns],
+        momentum=momentum,
+        lang=req.lang,
+    )
+    return {"answer": answer}
 
 
 @app.get("/insights/alerts", dependencies=[Depends(require_token)])

@@ -287,6 +287,81 @@ def _fallback_alerts(momentum, sources, forecast, velocity, lang) -> list[dict]:
     return alerts
 
 
+_CHAT_SYSTEM_ES = """Eres un asistente analítico de call center con acceso en tiempo real a los datos de rendimiento del equipo.
+
+Responde preguntas sobre agentes, campañas, leads, tendencias y métricas. Sé directo y cita números exactos de los datos. Máximo 3-4 frases por respuesta salvo que se pida más detalle. Nunca inventes datos que no estén en el contexto.
+
+Datos actuales:
+{data}
+"""
+
+_CHAT_SYSTEM_EN = """You are a call centre analytics assistant with real-time access to this Vicidial operation's performance data.
+
+Answer questions about agents, campaigns, leads, trends and metrics. Be direct, cite exact numbers from the data. Max 3-4 sentences per answer unless more detail is requested. Never invent data not present in the context.
+
+Current data:
+{data}
+"""
+
+
+def _format_chat_context(agents: list[dict], campaigns: list[dict], momentum: list[dict]) -> str:
+    lines = ["AGENTS (last 7 days):"]
+    for a in agents[:12]:
+        lines.append(
+            f"- {a['full_name']}: {a['sales']} sales, "
+            f"{round(a['close_rate']*100, 1)}% close rate, "
+            f"{a['calls_handled']} calls, {a['avg_talk_sec']}s avg talk, "
+            f"{a['dials_per_hour']:.1f} dials/hr"
+        )
+    lines.append("\nCAMPAIGNS (last 30 days):")
+    for c in campaigns[:8]:
+        lines.append(
+            f"- {c['campaign_name']}: {c['total_sales']} sales, "
+            f"{round(c['conversion_rate']*100, 1)}% conv, "
+            f"{c['active_agents']} agents, {c['dials_per_sale']:.1f} dials/sale"
+        )
+    lines.append("\nAGENT MOMENTUM TREND:")
+    for m in momentum[:10]:
+        lines.append(
+            f"- {m['full_name']}: {m['status']}, "
+            f"change {m['change_pct']:+.1f}%, "
+            f"now {round(m['current_close_rate']*100, 1)}% (was {round(m['prior_avg_close_rate']*100, 1)}%)"
+        )
+    return "\n".join(lines)
+
+
+def chat_with_data(
+    question: str,
+    history: list[dict[str, str]],
+    agents: list[dict],
+    campaigns: list[dict],
+    momentum: list[dict],
+    lang: str = "es",
+) -> str:
+    """Interactive Q&A against live data via Haiku. ~$0.001/call."""
+    if not settings.anthropic_api_key:
+        return (
+            "IA no configurada. Configure ANTHROPIC_API_KEY en Railway."
+            if lang == "es"
+            else "AI not configured. Set ANTHROPIC_API_KEY in Railway."
+        )
+
+    data_str = _format_chat_context(agents, campaigns, momentum)
+    system = (_CHAT_SYSTEM_EN if lang == "en" else _CHAT_SYSTEM_ES).format(data=data_str)
+
+    # Keep last 10 turns to stay within context budget
+    messages: list[dict] = [*history[-10:], {"role": "user", "content": question}]
+
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    msg = client.messages.create(
+        model=_HAIKU_MODEL,
+        max_tokens=400,
+        system=system,
+        messages=messages,
+    )
+    return msg.content[0].text.strip()
+
+
 def _fallback_summary(
     agent_stats: list[dict],
     dispo_breakdown: list[dict],
