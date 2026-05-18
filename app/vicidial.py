@@ -327,10 +327,20 @@ def _mock_campaign_performance(days_back: int) -> list[dict[str, Any]]:
 
 
 def _mock_agent_momentum(days_back: int) -> list[dict[str, Any]]:
-    """Per-agent close-rate trend series.
+    """Per-agent close-rate trend series with team comparison and fatigue signals.
 
     Granularity auto-selected: daily (days_back<=14) or weekly (>14).
     Real backend: same SQL as agent_stats bucketed by day / ISO-week.
+
+    New fields (v2):
+      team_avg_series  — team mean close-rate per period (same length as weekly_series)
+      own_baseline     — agent's prior-period average (baseline for self-comparison)
+      fatigue_score    — 0-100 composite (25 pts per rule fired)
+      fatigue_flags    — which rules fired: pausas_excesivas | ritmo_cayendo |
+                          esfuerzo_sin_resultado | callbacks_sin_seguimiento
+      pause_ratio      — pause_seconds / login_seconds
+      dials_per_hour   — dialling speed proxy
+      utilization_rate — active talk ratio
     """
     if days_back <= 14:
         n_points = max(2, days_back)
@@ -340,7 +350,11 @@ def _mock_agent_momentum(days_back: int) -> list[dict[str, Any]]:
         granularity = "weekly"
 
     rng = random.Random(31)
-    out: list[dict[str, Any]] = []
+
+    # ── Pass 1: build all trajectories ───────────────────────────────────────
+    entries: list[dict[str, Any]] = []
+    all_trajectories: list[list[float]] = []
+
     for i, (user, full_name, skill) in enumerate(_MOCK_AGENTS):
         if i % 5 == 0:        # rising star
             base = max(0.02, skill - 0.05)
@@ -370,19 +384,83 @@ def _mock_agent_momentum(days_back: int) -> list[dict[str, Any]]:
             trajectory = [skill + rng.uniform(-0.01, 0.01) for _ in range(n_points)]
             status = "stable"
 
-        current = round(max(0.01, trajectory[-1]), 4)
+        all_trajectories.append(trajectory)
+        entries.append({"user": user, "full_name": full_name, "skill": skill,
+                        "status": status, "trajectory": trajectory, "idx": i})
+
+    # ── Team average per period ───────────────────────────────────────────────
+    n_agents = len(all_trajectories)
+    team_avg_series = [
+        round(sum(t[p] for t in all_trajectories) / n_agents, 4)
+        for p in range(n_points)
+    ]
+
+    # ── Pass 2: per-agent fatigue & final assembly ────────────────────────────
+    out: list[dict[str, Any]] = []
+    for e in entries:
+        trajectory = e["trajectory"]
+        skill      = e["skill"]
+        i          = e["idx"]
+        status     = e["status"]
+
+        current   = round(max(0.01, trajectory[-1]), 4)
         prior_avg = round(sum(trajectory[:-1]) / max(1, len(trajectory) - 1), 4)
         change_pct = round(((current - prior_avg) / prior_avg) * 100, 1) if prior_avg else 0.0
 
+        # Per-agent mock vitals — deterministic, seeded per agent
+        arng = random.Random(31 + i * 7)
+        utilization  = max(0.10, min(0.95, 0.50 + (skill - 0.07) * 3 + arng.uniform(-0.15, 0.15)))
+        pause_ratio  = max(0.05, min(0.90, 1.0 - utilization + arng.uniform(-0.05, 0.05)))
+        dials_per_hour = max(5.0, 14.0 + skill * 80 + arng.uniform(-3, 3))
+        callback_conv  = max(0.0, min(1.0, 0.30 + skill * 2 + arng.uniform(-0.10, 0.10)))
+
+        # Dials trend: compare first half vs second half of the series
+        mid = n_points // 2
+        first_half_avg  = sum(trajectory[:mid]) / max(1, mid)
+        second_half_avg = sum(trajectory[mid:]) / max(1, n_points - mid)
+        dials_declining = (
+            n_points >= 4
+            and first_half_avg > 0
+            and (second_half_avg - first_half_avg) / first_half_avg < -0.15
+        )
+
+        # ── Fatigue rules (25 pts each) ───────────────────────────────────────
+        fatigue_flags: list[str] = []
+        fatigue_score = 0
+
+        if utilization < 0.25 and pause_ratio > 0.40:
+            fatigue_flags.append("pausas_excesivas")
+            fatigue_score += 25
+
+        if dials_declining:
+            fatigue_flags.append("ritmo_cayendo")
+            fatigue_score += 25
+
+        if status == "needs_attention" and utilization < 0.50:
+            fatigue_flags.append("esfuerzo_sin_resultado")
+            fatigue_score += 25
+
+        if callback_conv < 0.30:
+            fatigue_flags.append("callbacks_sin_seguimiento")
+            fatigue_score += 25
+
         out.append({
-            "user": user,
-            "full_name": full_name,
+            "user":               e["user"],
+            "full_name":          e["full_name"],
             "current_close_rate": current,
             "prior_avg_close_rate": prior_avg,
-            "change_pct": change_pct,
-            "status": status,
-            "weekly_series": [round(max(0.0, t), 4) for t in trajectory],
-            "series_granularity": granularity,   # "daily" | "weekly"
+            "change_pct":         change_pct,
+            "status":             status,
+            "weekly_series":      [round(max(0.0, t), 4) for t in trajectory],
+            "series_granularity": granularity,
+            # v2 fields
+            "team_avg_series":    team_avg_series,
+            "own_baseline":       prior_avg,
+            "fatigue_score":      min(100, fatigue_score),
+            "fatigue_flags":      fatigue_flags,
+            "pause_ratio":        round(pause_ratio, 3),
+            "dials_per_hour":     round(dials_per_hour, 1),
+            "utilization_rate":   round(utilization, 3),
         })
     return out
 
