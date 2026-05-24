@@ -34,5 +34,9 @@ class Settings:
 
     api_token: str = os.getenv("API_TOKEN", "")
 
+    redis_url: str = os.getenv("REDIS_URL", "")
+    # TTL in seconds for cached endpoint responses (safety net; prefetch keeps cache warm)
+    cache_ttl: int = int(os.getenv("CACHE_TTL", "300"))
+
 
 settings = Settings()
