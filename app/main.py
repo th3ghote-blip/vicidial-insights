@@ -78,7 +78,6 @@ def health():
         "status": "ok",
         "mock_mode": settings.mock_mode,
         "auth_configured": bool(settings.api_token),
-        "supabase_configured": bool(settings.supabase_url and settings.supabase_service_key),
         "anthropic_configured": bool(settings.anthropic_api_key),
         "redis_configured": bool(settings.redis_url),
         "redis_available": is_available(),

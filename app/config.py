@@ -24,10 +24,6 @@ class Settings:
     dispo_sale: str = os.getenv("DISPO_SALE", "SALE")
     dispo_callback: str = os.getenv("DISPO_CALLBACK", "CALLBK")
 
-    supabase_url: str = os.getenv("SUPABASE_URL", "")
-    supabase_service_key: str = os.getenv("SUPABASE_SERVICE_KEY", "")
-    supabase_publishable_key: str = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
-
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
 
     allowed_origin: str = os.getenv("ALLOWED_ORIGIN", "*")
